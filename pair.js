@@ -68,7 +68,7 @@ window.tbcTrack = function (event, props) {
   }
 };
 
-const MAX_DISPLAY_FRAMES = 200;
+const MAX_DISPLAY_FRAMES = 300;
 const MAX_RUN_SECONDS = 30;
 const ICON_ROOT = `${API_BASE}/static/tbc/icons`;
 const QUALITY_COLORS = [
