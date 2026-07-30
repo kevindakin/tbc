@@ -14,7 +14,7 @@ let systemHealth = "unavailable";
 
 const STATUS_LABELS = {
   ready: "Ready",
-  finalized: "Finalized",
+  finalized: "Completed",
   generating: "Generating",
   finalizing: "Finalizing",
   paused: "Paused",
