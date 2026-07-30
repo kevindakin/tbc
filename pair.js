@@ -30,6 +30,11 @@ const API_BASE = window.TBC_API_BASE || "";
 const WS_BASE =
   window.TBC_WS_BASE ||
   `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+const TTFF_PREVIEW_BUILD = true;
+document.documentElement.setAttribute(
+  "data-tbc-preview-build",
+  "tutorial-safe-prepared-pair-v2"
+);
 
 const MODELS = ["oasis-500m", "causal_v4c"];
 const MODEL_META = {
@@ -58,6 +63,10 @@ const QUALITY_REPORT_ENDPOINT = 200;
 const RECENT_RUNS_STORAGE_KEY = "tbc.pair.recentRuns.v1";
 const MAX_RECENT_RUNS = 5;
 const QUEUE_STOP_RESERVE_SECONDS = 5;
+const QUEUE_HEARTBEAT_INTERVAL_MS = 5000;
+// The model worker closes a WebSocket that receives no first command after
+// 30 seconds. Leave enough margin to cleanly release an abandoned prepared pair.
+const PREPARED_IDLE_TIMEOUT_MS = 24000;
 
 window.tbcTrack = function (event, props) {
   if (typeof window.posthog === "undefined") return;
@@ -326,6 +335,7 @@ function makeStats() {
   return {
     requestStartedAt: null,
     firstFrameAt: null,
+    firstPaintAt: null,
     lastFrameAt: null,
     elapsedMs: 0,
     pauseElapsedMs: 0,
@@ -347,6 +357,10 @@ function makeStats() {
 const state = {
   running: false,
   starting: false,
+  prepared: false,
+  preparePromise: null,
+  preparedIdleTimer: null,
+  reprepareAfterTutorial: false,
   stopping: false,
   cancelStart: false,
   intentionalStop: false,
@@ -423,6 +437,7 @@ const state = {
     requestVersion: 0,
     reportEndpoint: QUALITY_REPORT_ENDPOINT,
   },
+  timing: null,
 };
 
 const queueState = {
@@ -437,7 +452,217 @@ const queueState = {
   readySent: false,
   ending: false,
   reconnecting: false,
+  heartbeatTimer: null,
 };
+
+function timingId() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `preview-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function startBrowserTiming() {
+  state.timing = {
+    traceId: timingId(),
+    ticketCid: queueState.cid,
+    requestAt: performance.now(),
+    queueSocketOpenAt: null,
+    joinedAt: null,
+    admittedAt: null,
+    prepareStartedAt: null,
+    preparedAt: null,
+    clickAt: null,
+    panes: [
+      {
+        sessionCreateStartedAt: null,
+        sessionCreatedAt: null,
+        streamConnectStartedAt: null,
+        streamReadyAt: null,
+        firstFrameAt: null,
+        firstPaintAt: null,
+      },
+      {
+        sessionCreateStartedAt: null,
+        sessionCreatedAt: null,
+        streamConnectStartedAt: null,
+        streamReadyAt: null,
+        firstFrameAt: null,
+        firstPaintAt: null,
+      },
+    ],
+    sentPhases: new Set(),
+  };
+}
+
+function elapsedMs(start, end) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start)
+    return null;
+  return Math.round((end - start) * 10) / 10;
+}
+
+function latestTime(values) {
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? Math.max(...finite) : null;
+}
+
+function earliestTime(values) {
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? Math.min(...finite) : null;
+}
+
+function compactTimingFields(fields) {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => Number.isFinite(value))
+  );
+}
+
+function browserTimingPayload(phase) {
+  const timing = state.timing;
+  if (!timing) return null;
+  const [base, optimized] = timing.panes;
+  const streamReadyAt = latestTime([
+    base.streamReadyAt,
+    optimized.streamReadyAt,
+  ]);
+  const firstFramesAt = latestTime([base.firstFrameAt, optimized.firstFrameAt]);
+  const firstPaintsAt = latestTime([base.firstPaintAt, optimized.firstPaintAt]);
+  const firstFrameStart = earliestTime([
+    base.firstFrameAt,
+    optimized.firstFrameAt,
+  ]);
+  const firstPaintStart = earliestTime([
+    base.firstPaintAt,
+    optimized.firstPaintAt,
+  ]);
+
+  const panePayload = (pane) =>
+    compactTimingFields({
+      session_create_ms: elapsedMs(
+        pane.sessionCreateStartedAt,
+        pane.sessionCreatedAt
+      ),
+      websocket_connect_ms: elapsedMs(
+        pane.streamConnectStartedAt,
+        pane.streamReadyAt
+      ),
+      admission_to_stream_ready_ms: elapsedMs(
+        timing.admittedAt,
+        pane.streamReadyAt
+      ),
+      click_to_first_frame_ms: elapsedMs(timing.clickAt, pane.firstFrameAt),
+      click_to_first_paint_ms: elapsedMs(timing.clickAt, pane.firstPaintAt),
+      receive_to_paint_ms: elapsedMs(pane.firstFrameAt, pane.firstPaintAt),
+    });
+
+  return {
+    schema_version: 1,
+    trace_id: timing.traceId,
+    phase,
+    scene: state.scene || "unknown",
+    queue: compactTimingFields({
+      request_to_socket_open_ms: elapsedMs(
+        timing.requestAt,
+        timing.queueSocketOpenAt
+      ),
+      request_to_joined_ms: elapsedMs(timing.requestAt, timing.joinedAt),
+      request_to_admitted_ms: elapsedMs(timing.requestAt, timing.admittedAt),
+      joined_to_admitted_ms: elapsedMs(timing.joinedAt, timing.admittedAt),
+      admitted_to_prepared_ms: elapsedMs(timing.admittedAt, timing.preparedAt),
+      admitted_to_click_ms: elapsedMs(timing.admittedAt, timing.clickAt),
+      request_to_prepared_ms: elapsedMs(timing.requestAt, timing.preparedAt),
+    }),
+    pair: compactTimingFields({
+      admission_to_both_streams_ready_ms: elapsedMs(
+        timing.admittedAt,
+        streamReadyAt
+      ),
+      streams_ready_before_click_ms: elapsedMs(streamReadyAt, timing.clickAt),
+      click_to_both_first_frames_ms: elapsedMs(timing.clickAt, firstFramesAt),
+      click_to_both_first_paints_ms: elapsedMs(timing.clickAt, firstPaintsAt),
+      request_to_both_first_paints_ms: elapsedMs(
+        timing.requestAt,
+        firstPaintsAt
+      ),
+      first_frame_skew_ms: elapsedMs(firstFrameStart, firstFramesAt),
+      first_paint_skew_ms: elapsedMs(firstPaintStart, firstPaintsAt),
+    }),
+    panes: {
+      base: panePayload(base),
+      optimized: panePayload(optimized),
+    },
+  };
+}
+
+function submitBrowserTiming(phase) {
+  const timing = state.timing;
+  if (!timing || timing.sentPhases.has(phase)) return;
+  const cid = queueState.cid || timing.ticketCid;
+  const payload = browserTimingPayload(phase);
+  if (!cid || !payload) return;
+  timing.sentPhases.add(phase);
+  void fetch(`${API_BASE}/telemetry/browser-timeline`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-queue-cid": cid,
+    },
+    body: JSON.stringify(payload),
+    keepalive: true,
+  }).catch(() => {
+    // Timing must never delay or interrupt generation.
+  });
+}
+
+function markFirstPaint(index) {
+  const timing = state.timing;
+  if (!timing || timing.panes[index].firstPaintAt !== null) return;
+  const paintedAt = performance.now();
+  timing.panes[index].firstPaintAt = paintedAt;
+  state.stats[index].firstPaintAt = paintedAt;
+  if (timing.panes.every((pane) => pane.firstPaintAt !== null))
+    submitBrowserTiming("pair_ready");
+}
+
+function clearPreparedIdleTimer() {
+  if (state.preparedIdleTimer !== null)
+    window.clearTimeout(state.preparedIdleTimer);
+  state.preparedIdleTimer = null;
+}
+
+if (TTFF_PREVIEW_BUILD) {
+  Object.defineProperty(window, "TBC_PREVIEW_DIAGNOSTICS", {
+    configurable: false,
+    get() {
+      return {
+        version: "tutorial-safe-prepared-pair-v2",
+        starting: state.starting,
+        prepared: state.prepared,
+        running: state.running,
+        stopping: state.stopping,
+        streamsOpen: [...state.streamsOpen],
+        panePhase: [...state.panePhase],
+        frames: state.stats.map((stats) => stats.frames),
+        timing: browserTimingPayload("pair_ready"),
+      };
+    },
+  });
+  const publishPreviewDiagnostics = () => {
+    document.documentElement.dataset.tbcPreviewState = JSON.stringify({
+      version: "tutorial-safe-prepared-pair-v2",
+      starting: state.starting,
+      prepared: state.prepared,
+      running: state.running,
+      stopping: state.stopping,
+      streamsOpen: [...state.streamsOpen],
+      panePhase: [...state.panePhase],
+      frames: state.stats.map((stats) => stats.frames),
+    });
+    document.documentElement.dataset.tbcPreviewTiming = JSON.stringify(
+      browserTimingPayload("pair_ready")
+    );
+  };
+  publishPreviewDiagnostics();
+  window.setInterval(publishPreviewDiagnostics, 250);
+}
 
 function beginRun() {
   const startedAt = Date.now();
@@ -2208,9 +2433,10 @@ window.addEventListener("blur", resetInput);
 for (const canvas of canvases) {
   canvas.tabIndex = 0;
   canvas.addEventListener("click", () => {
-    // Pre-run: this click creates the sessions. Nothing is open before it, so
-    // there's no idle stream for the worker to time out.
-    if (!state.running && !state.starting && !state.stopping) {
+    // The queue admission path prepares both sessions and sockets first. This
+    // click only starts model work, so the measured TTFF excludes reservation
+    // and connection setup without generating hidden frames.
+    if (!state.running && !state.stopping) {
       if (queueState.enabled && !queueState.admitted) return;
       if (!state.scenesReady || !queueState.initialized) return;
 
@@ -2218,6 +2444,8 @@ for (const canvas of canvases) {
         pane: canvases.indexOf(canvas) === 1 ? "optimized" : "base",
         scene: state.sceneLabel,
       });
+
+      window.markTutorialSeen?.();
 
       // Lock first, synchronously — start() is async and awaiting it would
       // spend the user activation this gesture carries.
@@ -2634,6 +2862,7 @@ function updateStats(index, meta) {
     stats.firstFrameAt = now;
     stats.ttffMs =
       stats.requestStartedAt === null ? null : now - stats.requestStartedAt;
+    if (state.timing) state.timing.panes[index].firstFrameAt = now;
   }
 
   const arrivalFps =
@@ -2761,6 +2990,8 @@ async function presentNextFrame(index, version) {
       await drawFrame(index, nextFrame, version);
       if (state.renderVersion[index] !== version) return;
       if (state.panePhase[index] !== "live") setPanePhase(index, "live");
+      if (state.stats[index].firstPaintAt === null)
+        window.requestAnimationFrame(() => markFirstPaint(index));
       onFirstFrame();
     } catch (error) {
       showPaneError(
@@ -2972,12 +3203,24 @@ function openStream(index) {
       if (
         !state.expectedClose[index] &&
         !state.intentionalStop &&
-        (state.running || state.starting)
+        (state.running || state.starting || state.prepared)
       ) {
         showPaneError(
           index,
           "The worker disconnected. The other stream can continue independently."
         );
+        if (state.prepared && !state.stopping) {
+          state.prepared = false;
+          clearPreparedIdleTimer();
+          submitBrowserTiming("error");
+          void stop({ reason: "prepared-disconnect" }).then(() => {
+            document.dispatchEvent(
+              new CustomEvent("tbc:preparation-ended", {
+                detail: { reason: "error" },
+              })
+            );
+          });
+        }
       }
     };
   });
@@ -3127,19 +3370,21 @@ function updateRunLabel() {
   )} / ${shortSessionId(state.sessions[1])} | ${timestamp}`;
 }
 
-async function start() {
-  if (state.starting || state.running || state.stopping || !state.scenesReady)
-    return;
+async function performPrepareRun() {
   if (!state.quality.initialized) await initQuality();
   state.starting = true;
+  state.prepared = false;
   state.cancelStart = false;
   state.intentionalStop = false;
+  clearPreparedIdleTimer();
+  if (!state.timing) startBrowserTiming();
+  if (state.timing.admittedAt === null)
+    state.timing.admittedAt = state.timing.requestAt;
+  state.timing.prepareStartedAt = performance.now();
   beginRun();
   resetRunState();
-  const requestStartedAt = performance.now();
-  for (const stats of state.stats) stats.requestStartedAt = requestStartedAt;
   setPickerEnabled(false);
-  setStatus("Creating both GPU sessions...");
+  setStatus("Preparing both GPU sessions...");
   syncControls();
   updateRunLabel();
 
@@ -3149,9 +3394,13 @@ async function start() {
     setupResults = await Promise.allSettled(
       MODELS.map(async (model, index) => {
         if (state.cancelStart) throw new Error("Start cancelled.");
+        state.timing.panes[index].sessionCreateStartedAt = performance.now();
         state.sessions[index] = await createSession(model);
+        state.timing.panes[index].sessionCreatedAt = performance.now();
         if (state.cancelStart) throw new Error("Start cancelled.");
+        state.timing.panes[index].streamConnectStartedAt = performance.now();
         await openStream(index);
+        state.timing.panes[index].streamReadyAt = performance.now();
         if (state.cancelStart) throw new Error("Start cancelled.");
         updateRunLabel();
       })
@@ -3165,19 +3414,54 @@ async function start() {
     }
     if (state.cancelStart) throw new Error("Start cancelled.");
 
-    resetInput();
     state.starting = false;
-    state.running = true;
-    state.run.phase = "initializing";
-    if (document.activeElement instanceof HTMLElement)
-      document.activeElement.blur();
-    canvases[0].focus({ preventScroll: true });
+    state.prepared = true;
+    state.run.phase = "ready";
+    state.timing.preparedAt = performance.now();
+    for (let index = 0; index < MODELS.length; index += 1)
+      setPanePhase(index, "ready");
+    restoreIdlePrompts();
+    setStatus("Ready. Click either video to start.");
+    showQueue("Ready. Click either video to start.", { state: "armed" });
+    const firstStreamReadyAt = earliestTime(
+      state.timing.panes.map((pane) => pane.streamReadyAt)
+    );
+    const preparedIdleBudgetMs = Math.max(
+      1000,
+      PREPARED_IDLE_TIMEOUT_MS -
+        (firstStreamReadyAt === null
+          ? 0
+          : performance.now() - firstStreamReadyAt)
+    );
+    state.preparedIdleTimer = window.setTimeout(() => {
+      state.preparedIdleTimer = null;
+      if (!state.prepared || state.running || state.stopping) return;
+
+      // Reading the tutorial isn't abandonment. Release the pair to free the
+      // GPU, then prepare again when the tutorial closes.
+      const tutorialOpen =
+        document.querySelector("[data-tutorial]")?.dataset.state === "open";
+
+      void stop({ reason: "prepared-timeout" }).then(() => {
+        if (tutorialOpen) {
+          state.reprepareAfterTutorial = true;
+          return;
+        }
+        setStatus("The prepared session expired. Press Play to try again.");
+        document.dispatchEvent(
+          new CustomEvent("tbc:preparation-ended", {
+            detail: { reason: "timeout" },
+          })
+        );
+      });
+    }, preparedIdleBudgetMs);
     syncControls();
-    setStatus("Generating at each model's measured speed.");
-    primeComparison();
+    return true;
   } catch (error) {
     state.starting = false;
+    state.prepared = false;
     state.running = false;
+    clearPreparedIdleTimer();
     // The click claimed the pointer optimistically. Give it back rather than
     // trapping the cursor on an error screen.
     if (document.pointerLockElement && document.exitPointerLock)
@@ -3193,9 +3477,10 @@ async function start() {
         setPanePhase(index, "stopped");
       setPickerEnabled(true);
       syncControls();
-      return;
+      return false;
     }
     finishRun("start-error", "error");
+    submitBrowserTiming("error");
     // Both sessions are requested in parallel, so a router-level failure
     // rejects both. Surface every rejection — marking the others "stopped"
     // made a total outage look like one pane misbehaving.
@@ -3228,7 +3513,61 @@ async function start() {
     }
     setPickerEnabled(true);
     syncControls();
+    releaseQueue();
+    document.dispatchEvent(
+      new CustomEvent("tbc:preparation-ended", {
+        detail: { reason: "error" },
+      })
+    );
+    return false;
   }
+}
+
+function prepareRun() {
+  if (state.prepared) return Promise.resolve(true);
+  if (state.preparePromise) return state.preparePromise;
+  if (state.running || state.stopping || !state.scenesReady)
+    return Promise.resolve(false);
+  const preparation = performPrepareRun();
+  state.preparePromise = preparation.finally(() => {
+    state.preparePromise = null;
+  });
+  return state.preparePromise;
+}
+
+function activatePreparedRun() {
+  if (
+    !state.prepared ||
+    state.starting ||
+    state.running ||
+    state.stopping ||
+    !state.streamsOpen.every(Boolean)
+  )
+    return false;
+  clearPreparedIdleTimer();
+  state.prepared = false;
+  const clickAt = performance.now();
+  if (state.timing) state.timing.clickAt = clickAt;
+  for (const stats of state.stats) stats.requestStartedAt = clickAt;
+  resetInput();
+  state.running = true;
+  state.run.phase = "initializing";
+  if (document.activeElement instanceof HTMLElement)
+    document.activeElement.blur();
+  canvases[0].focus({ preventScroll: true });
+  syncControls();
+  setStatus("Generating at each model's measured speed.");
+  primeComparison();
+  return true;
+}
+
+async function start() {
+  if (activatePreparedRun()) return;
+  if (state.running || state.stopping || !state.scenesReady) return;
+  // A click that lands while automatic preparation is still in flight should
+  // wait for that same promise and activate once, not require a second click.
+  const prepared = await prepareRun();
+  if (prepared) activatePreparedRun();
 }
 
 async function stop({ fromQueue = false, reason = null } = {}) {
@@ -3248,6 +3587,8 @@ async function stop({ fromQueue = false, reason = null } = {}) {
   state.intentionalStop = true;
   state.running = false;
   state.starting = false;
+  state.prepared = false;
+  clearPreparedIdleTimer();
   clearRunCapTimer();
   stopCountdownTicker();
   // Kill the sequential lead timers if we're stopping mid-lead, or the pending
@@ -3286,6 +3627,7 @@ async function stop({ fromQueue = false, reason = null } = {}) {
     showQueue("Scoring this run. Results appear below.", { state: "info" });
   }
   await closeAllPanes();
+  submitBrowserTiming(wasRunning ? "complete" : "cancelled");
   if (!fromQueue) releaseQueue();
   finishRun(reason || (fromQueue ? "queue-evicted" : "stopped"));
   upsertRecentRun();
@@ -3852,6 +4194,7 @@ function onFirstFrame() {
 
 function releaseQueue() {
   stopCountdownTicker();
+  stopQueueHeartbeat();
   queueState.requested = false;
   queueState.admitted = false;
   queueState.readySent = false;
@@ -3866,6 +4209,24 @@ function releaseQueue() {
     // The queue server may already have released the slot.
   }
   hideQueue();
+}
+
+function stopQueueHeartbeat() {
+  if (queueState.heartbeatTimer !== null)
+    window.clearInterval(queueState.heartbeatTimer);
+  queueState.heartbeatTimer = null;
+}
+
+function startQueueHeartbeat(ws) {
+  stopQueueHeartbeat();
+  queueState.heartbeatTimer = window.setInterval(() => {
+    if (queueState.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      // onclose owns the visible reconnect state.
+    }
+  }, QUEUE_HEARTBEAT_INTERVAL_MS);
 }
 
 async function handleStopRequest() {
@@ -3892,10 +4253,16 @@ async function handleStopRequest() {
 }
 
 function connectQueue() {
+  stopQueueHeartbeat();
   queueState.cid = null;
   queueState.reconnecting = false;
   const ws = new WebSocket(`${WS_BASE}/queue/ws`);
   queueState.ws = ws;
+  ws.onopen = () => {
+    if (queueState.ws !== ws) return;
+    if (state.timing) state.timing.queueSocketOpenAt = performance.now();
+    startQueueHeartbeat(ws);
+  };
   ws.onmessage = (event) => {
     try {
       void onQueueMessage(JSON.parse(event.data));
@@ -3909,6 +4276,23 @@ function connectQueue() {
   };
   ws.onclose = () => {
     if (queueState.ws !== ws) return;
+    stopQueueHeartbeat();
+    if ((state.prepared || state.starting) && !state.stopping) {
+      submitBrowserTiming("queue_disconnected");
+      void stop({ reason: "queue-disconnected" }).then(() => {
+        showQueue("Queue disconnected", {
+          state: "error",
+          actionLabel: "Try again",
+          onAction: requestGeneration,
+        });
+        document.dispatchEvent(
+          new CustomEvent("tbc:preparation-ended", {
+            detail: { reason: "queue-disconnected" },
+          })
+        );
+      });
+      return;
+    }
     if (
       queueState.enabled &&
       queueState.requested &&
@@ -3935,13 +4319,16 @@ function requestGeneration() {
   )
     return;
   window.tbcTrack("demo_play_clicked", { scene: state.sceneLabel });
+  startBrowserTiming();
   if (!queueState.enabled) {
-    // No queue: nothing to wait for. Reuse the same event so the screen
-    // transition has one owner, and let the canvas click create the sessions.
+    // No queue: move to the run screen and prepare immediately. Generation
+    // still waits for the visitor's canvas click.
+    state.timing.admittedAt = state.timing.requestAt;
     document.dispatchEvent(
       new CustomEvent("tbc:queue-admitted", { detail: {} })
     );
     restoreIdlePrompts();
+    void prepareRun();
     return;
   }
   queueState.requested = true;
@@ -3956,17 +4343,28 @@ function requestGeneration() {
 }
 
 async function onQueueMessage(message) {
+  if (message.cid) {
+    queueState.cid = message.cid;
+    if (state.timing) state.timing.ticketCid = message.cid;
+  }
   if (message.type === "disabled") {
     queueState.enabled = false;
     const shouldStart = queueState.requested;
     queueState.requested = false;
     hideQueue();
     syncControls();
-    if (shouldStart) await start();
+    if (shouldStart) {
+      if (state.timing) state.timing.admittedAt = performance.now();
+      document.dispatchEvent(
+        new CustomEvent("tbc:queue-admitted", { detail: {} })
+      );
+      await prepareRun();
+    }
     return;
   }
   if (message.type === "joined") {
-    queueState.cid = message.cid;
+    if (state.timing && state.timing.joinedAt === null)
+      state.timing.joinedAt = performance.now();
     showQueue("Joined the play queue", { state: "joined" });
     return;
   }
@@ -3984,9 +4382,13 @@ async function onQueueMessage(message) {
     return;
   }
   if (message.type === "admitted") {
+    const newlyAdmitted = !queueState.admitted;
+    if (state.timing && state.timing.admittedAt === null)
+      state.timing.admittedAt = performance.now();
     queueState.playSeconds = message.play_seconds || queueState.playSeconds;
     queueState.remainingSeconds = queueState.playSeconds;
     queueState.admitted = true;
+    if (!newlyAdmitted) return;
     queueState.readySent = false;
     queueState.ending = false;
     document.dispatchEvent(
@@ -3994,11 +4396,9 @@ async function onQueueMessage(message) {
         detail: { playSeconds: queueState.playSeconds },
       })
     );
-    // Sessions are created by the canvas click, not here — so no GPU is held
-    // while the visitor reads the prompt.
-    restoreIdlePrompts();
-    showQueue("Your turn. Click either video to start.", { state: "armed" });
+    showQueue("Preparing both video streams...", { state: "joining" });
     syncControls();
+    void prepareRun();
     return;
   }
   if (message.type === "playing") {
@@ -4032,6 +4432,7 @@ async function onQueueMessage(message) {
     await stop({ fromQueue: true });
     const queueSocket = queueState.ws;
     queueState.ws = null;
+    stopQueueHeartbeat();
     try {
       if (queueSocket) queueSocket.close();
     } catch {
@@ -4074,6 +4475,7 @@ el("pane1Retry")?.addEventListener("click", () => void retryPane(1));
 
 window.addEventListener("beforeunload", () => {
   state.intentionalStop = true;
+  stopQueueHeartbeat();
   clearQualityPoll();
   for (const ws of state.ws) {
     try {

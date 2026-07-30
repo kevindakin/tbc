@@ -98,6 +98,32 @@ function queueIsEnabled() {
   return hasEngine() ? Boolean(queueState.enabled) : false;
 }
 
+let awaitingPreparedTransition = false;
+
+// Returning visitors have no tutorial to fill the wait, so hold the transition
+// until the pair is ready. The run screen then arrives complete, with the
+// prompt already visible, instead of sitting empty for three seconds.
+function transitionWhenPrepared(maxWaitMs = 6000) {
+  if (awaitingPreparedTransition) return;
+  awaitingPreparedTransition = true;
+  const startedAt = performance.now();
+
+  const finish = () => {
+    if (!awaitingPreparedTransition) return;
+    awaitingPreparedTransition = false;
+    if (typeof goToScreen === "function") goToScreen("run");
+  };
+
+  const tick = () => {
+    if (!awaitingPreparedTransition) return;
+    if (hasEngine() && state.prepared) return finish();
+    if (performance.now() - startedAt >= maxWaitMs) return finish();
+    window.setTimeout(tick, 100);
+  };
+
+  tick();
+}
+
 function initQueueGating() {
   // Capture phase on document: this runs before the click reaches #startBtn,
   // so it preempts both the engine's own listener and demo.js's
@@ -111,6 +137,15 @@ function initQueueGating() {
         target instanceof Element ? target.closest("#startBtn") : null;
       if (!start || start.disabled) return;
 
+      // First-time visitors complete the tutorial before joining the queue.
+      // Otherwise a long tutorial can consume the 30-second admission/start
+      // budget before the model sockets are allowed to generate.
+      if (!tutorialSeen() && tutorial) {
+        if (typeof goToScreen === "function") goToScreen("run");
+        // Let the screen transition get underway before the modal lands on top.
+        window.setTimeout(() => tutorial.open({ force: true }), 700);
+      }
+
       // Queue off: let the normal click flow run (transition + engine start).
       if (!queueIsEnabled()) return;
 
@@ -120,9 +155,22 @@ function initQueueGating() {
     true
   );
 
-  // Engine fired this from onQueueMessage() the moment the slot opened.
   document.addEventListener("tbc:queue-admitted", () => {
-    if (typeof goToScreen === "function") goToScreen("run");
+    if (typeof goToScreen !== "function") return;
+    // First-time visitors already moved to the run screen when Play was
+    // clicked, so the tutorial has somewhere to sit.
+    if (!tutorialSeen()) {
+      goToScreen("run");
+      return;
+    }
+    transitionWhenPrepared();
+  });
+
+  document.addEventListener("tbc:preparation-ended", () => {
+    awaitingPreparedTransition = false;
+    pendingPlayAfterTutorial = false;
+    tutorial?.close("preparation-ended");
+    if (typeof goToScreen === "function") goToScreen("select");
   });
 }
 
@@ -309,15 +357,14 @@ function initQueueDismiss() {
 }
 
 // TUTORIAL -------------------------------------------------------------------
-// Six-card stepper, shown once per browser the first time the visitor reaches
-// the run screen. Sessions are created by the canvas click, so nothing is
-// allocated while this is open — the only clock running is the queue's
-// admission grace.
+// Six-card stepper, shown before the first queue request. Returning visitors
+// skip it and proceed directly to queue admission and pair preparation.
 
 const TUTORIAL_SEEN_KEY = "tbc.tutorial.seen.v1";
 // Set true while testing / demoing so the tutorial shows on every visit.
 const TUTORIAL_ALWAYS_SHOW = false;
 let tutorial = null;
+let pendingPlayAfterTutorial = false;
 
 function tutorialSeen() {
   if (TUTORIAL_ALWAYS_SHOW) return false;
@@ -327,6 +374,21 @@ function tutorialSeen() {
     return false;
   }
 }
+
+let tutorialCompleted = false;
+
+// The flag is written on the canvas click rather than on close, so someone who
+// skips the walkthrough or leaves without playing still sees it next visit.
+function markTutorialSeen() {
+  if (!tutorialCompleted) return;
+  try {
+    localStorage.setItem(TUTORIAL_SEEN_KEY, "true");
+  } catch {
+    // Private browsing — the tutorial will simply show again next visit.
+  }
+}
+
+window.markTutorialSeen = markTutorialSeen;
 
 function initTutorial() {
   const root = document.querySelector("[data-tutorial]");
@@ -360,6 +422,8 @@ function initTutorial() {
     index = nextIndex;
     const current = steps[index];
     const last = index === steps.length - 1;
+
+    if (last) tutorialCompleted = true;
 
     window.tbcTrack?.("demo_tutorial_step_viewed", {
       step: index + 1,
@@ -423,6 +487,8 @@ function initTutorial() {
 
   function close(reason = "unknown") {
     if (root.dataset.state !== "open") return;
+    const resumePendingPlay = pendingPlayAfterTutorial;
+    pendingPlayAfterTutorial = false;
 
     window.tbcTrack?.("demo_tutorial_exited", {
       reason,
@@ -431,12 +497,17 @@ function initTutorial() {
     });
 
     root.dataset.state = "closed";
-    try {
-      localStorage.setItem(TUTORIAL_SEEN_KEY, "true");
-    } catch {
-      // Private browsing — the tutorial will simply show again next visit.
-    }
     if (window.lenis) window.lenis.start();
+
+    // Marking the tutorial seen before requesting generation prevents the run
+    // screen observer below from immediately reopening it.
+    if (resumePendingPlay && typeof requestGeneration === "function")
+      requestGeneration();
+
+    if (state?.reprepareAfterTutorial) {
+      state.reprepareAfterTutorial = false;
+      if (typeof requestGeneration === "function") requestGeneration();
+    }
 
     const finish = () => {
       root.hidden = true;
@@ -487,16 +558,6 @@ function initTutorial() {
       render(index + 1);
     else if (event.key === "ArrowLeft" && index > 0) render(index - 1);
   });
-
-  // Open on the attribute flip rather than on timeline completion. goToScreen's
-  // timeline runs the outgoing blur, the flip, then a staggered reveal — waiting
-  // for all of it puts the modal seconds behind the screen it belongs to.
-  const shell = byId("experience");
-  if (shell) {
-    new MutationObserver(() => {
-      if (shell.dataset.screen === "run") open();
-    }).observe(shell, { attributes: true, attributeFilter: ["data-screen"] });
-  }
 
   tutorial = {
     open,
