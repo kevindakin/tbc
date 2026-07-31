@@ -10,20 +10,18 @@ function screenView(name) {
 function remeasure() {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
+      // Native scroll first: Lenis ignores scrollTo while stopped, which is
+      // exactly the case when the tutorial is open over the run screen.
+      window.scrollTo(0, 0);
       if (window.lenis) {
-        window.lenis.scrollTo(0, { immediate: true });
+        // Resize before scrolling — the select screen is taller than the run
+        // screen now, so Lenis needs the new document height first.
         window.lenis.resize();
+        window.lenis.scrollTo(0, { immediate: true, force: true });
       }
     });
   });
 }
-
-// function setGradientPlaying(playing) {
-//   const g = window.heroGradient;
-//   if (!g || !g.conf) return;
-//   if (playing && !g.conf.playing) g.play();
-//   else if (!playing && g.conf.playing) g.pause();
-// }
 
 // The header swap (h1 <-> model name, and the description) is handled purely in
 // CSS off #experience[data-screen]. Nothing to do here.
