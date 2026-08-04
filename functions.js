@@ -233,6 +233,7 @@ function initPauseLabels() {
 }
 
 let fullMetrics = null;
+const FULL_METRICS_DEFAULT_OPEN = true;
 
 function initFullMetrics() {
   const toggle = document.querySelector(".demo_run_toggle");
@@ -247,12 +248,18 @@ function initFullMetrics() {
     "(prefers-reduced-motion: reduce)"
   ).matches;
 
-  let open = false;
+  let open = FULL_METRICS_DEFAULT_OPEN;
   let tween = null;
 
-  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-expanded", String(open));
   toggle.setAttribute("aria-controls", content.id);
+  toggle.classList.toggle("is-open", open);
   applyLabel();
+
+  if (open) {
+    content.classList.add("is-open");
+    gsap.set(columns, { clearProps: "all" });
+  }
 
   function applyLabel() {
     const text = open ? LABELS.open : LABELS.closed;
