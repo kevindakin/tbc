@@ -55,7 +55,11 @@ const FREE_RUN_INPUT_INTERVAL_MS = 50;
 const PLAYBACK = { SIMULTANEOUS: "simultaneous", SEQUENTIAL: "sequential" };
 const LEAD_PANE = 1;
 const FOLLOW_PANE = 0;
-const SEQUENTIAL_LEAD_SECONDS = 30;
+const SEQUENTIAL_LEAD_SECONDS = 15;
+const SEQUENTIAL_PROMPTS = {
+  lead: "This is TBC's optimized model.<br>Tap to play.",
+  follow: "Finish your run to reveal the base model.",
+};
 const MAX_RECORDED_EVENTS = 2000;
 const FREE_RUN_NEGOTIATION_TIMEOUT_MS = 1000;
 const QUALITY_POLL_INTERVAL_MS = 1500;
@@ -354,6 +358,15 @@ function makeStats() {
   };
 }
 
+function detectPlayback() {
+  const override = new URLSearchParams(location.search).get("playback");
+  if (override === PLAYBACK.SEQUENTIAL || override === PLAYBACK.SIMULTANEOUS) {
+    console.warn(`[TBC] playback forced to "${override}" by URL parameter`);
+    return override;
+  }
+  return PLAYBACK.SIMULTANEOUS;
+}
+
 const state = {
   running: false,
   starting: false,
@@ -406,7 +419,7 @@ const state = {
   runCapTimer: null,
   metricTimer: null,
   lastMetricRenderAt: 0,
-  playback: String(window.TBC_PLAYBACK || PLAYBACK.SIMULTANEOUS).toLowerCase(),
+  playback: detectPlayback(),
   sequentialPhase: "idle", // idle | lead | replay | done
   leadTimer: null,
   leadCountdownTimer: null,
@@ -2461,12 +2474,13 @@ for (const canvas of canvases) {
       return;
     }
 
-    if (!state.running || !canvas.requestPointerLock) return;
+    if (!state.running) return;
     if (isSequential()) {
       if (canvases.indexOf(canvas) !== LEAD_PANE) return;
       if (state.sequentialPhase === "armed") beginLeadPhase();
       else if (state.sequentialPhase !== "lead") return;
     }
+    if (!canvas.requestPointerLock) return;
     canvas.focus({ preventScroll: true });
     try {
       const request = canvas.requestPointerLock();
@@ -2671,7 +2685,13 @@ function primeComparison() {
     state.sequentialPhase = "armed";
     setPanePhase(LEAD_PANE, "waiting");
     setPanePhase(FOLLOW_PANE, "waiting");
-    setStatus("Click the optimized video to start generating.");
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      // Touch has no "click in to capture the pointer" step, so the tap that
+      // started the run is also the tap that starts generating.
+      beginLeadPhase();
+    } else {
+      setStatus("Click the optimized video to start generating.");
+    }
     syncControls();
     return;
   }
@@ -2790,6 +2810,7 @@ function beginReplay() {
   setPanePhase(FOLLOW_PANE, "initializing");
   negotiateFreeRun(FOLLOW_PANE);
   setStatus("Replaying your inputs on the base model.");
+  document.dispatchEvent(new CustomEvent("tbc:replay-started"));
   syncControls();
   renderSequentialTurnBar();
 }
@@ -2822,6 +2843,7 @@ function beginLeadPhase() {
   setPanePhase(LEAD_PANE, "initializing");
   negotiateFreeRun(LEAD_PANE);
   setStatus("Generating on the optimized model.");
+  document.dispatchEvent(new CustomEvent("tbc:lead-started"));
   syncControls();
 }
 
@@ -3058,9 +3080,17 @@ function handleFrame(index, blob) {
   state.inFlight[index] = Math.max(0, state.inFlight[index] - 1);
   updateStats(index, meta);
 
+  // Sequential freezes the lead pane's picture but its worker keeps
+  // generating, so during replay the cap has to follow the pane on screen or
+  // it ends the run just as the base model starts.
+  const capIndex =
+    isSequential() && state.sequentialPhase === "replay"
+      ? FOLLOW_PANE
+      : LEAD_PANE;
+
   if (
-    index === 1 &&
-    state.stats[1].generatedFrames >= MAX_DISPLAY_FRAMES &&
+    index === capIndex &&
+    state.stats[capIndex].generatedFrames >= MAX_DISPLAY_FRAMES &&
     state.running &&
     !state.stopping
   ) {
@@ -3329,8 +3359,8 @@ function resetRunState() {
   state.recording = { active: false, startedAt: 0, events: [] };
   state.replay = { index: 0, startedAt: 0 };
   if (isSequential()) {
-    setPanePrompt(LEAD_PANE, "Click to play.");
-    setPanePrompt(FOLLOW_PANE, "Finish demo to reveal.");
+    el("pane1Prompt").innerHTML = SEQUENTIAL_PROMPTS.lead;
+    el("pane0Prompt").innerHTML = SEQUENTIAL_PROMPTS.follow;
   } else {
     // start() is now triggered by the click, so the prompt has done its job.
     setPanePrompt(0, "");
@@ -3649,6 +3679,7 @@ async function stop({ fromQueue = false, reason = null } = {}) {
     );
   }
   syncControls();
+  document.dispatchEvent(new CustomEvent("tbc:run-ended"));
   renderReportQuality();
   scheduleMetricRender();
 }
@@ -3832,11 +3863,11 @@ async function setupScenes() {
     if (!response.ok)
       throw new Error(`runtime config failed (${response.status})`);
     const config = await response.json();
-    // Backend wins over the Webflow-embedded default when it supplies one.
     const playback = String(config.playback || "").toLowerCase();
+    const localOverride = new URLSearchParams(location.search).has("playback");
     if (
-      playback === PLAYBACK.SEQUENTIAL ||
-      playback === PLAYBACK.SIMULTANEOUS
+      !localOverride &&
+      (playback === PLAYBACK.SEQUENTIAL || playback === PLAYBACK.SIMULTANEOUS)
     ) {
       state.playback = playback;
       applyPlaybackMode();
@@ -4158,10 +4189,16 @@ function hideQueue() {
 function onFirstFrame() {
   if (state.runCapTimer === null && state.running) {
     runCountdownStartedAt = performance.now();
+    // In sequential the lead phase gets MAX_RUN_SECONDS and the replay needs
+    // roughly the same again, so the overall cap has to cover both or it
+    // cancels the run before the base model has played.
+    const capSeconds = isSequential()
+      ? MAX_RUN_SECONDS * 2 + 10
+      : MAX_RUN_SECONDS;
     state.runCapTimer = window.setTimeout(() => {
       state.runCapTimer = null;
       if (state.running && !state.stopping) void stop({ reason: "time-cap" });
-    }, MAX_RUN_SECONDS * 1000);
+    }, capSeconds * 1000);
   }
   // Start the interactive budget at first frame, not at negotiation, so a slow
   // TTFF doesn't eat the visitor's turn.
@@ -4496,12 +4533,23 @@ window.addEventListener("beforeunload", () => {
 PAUSE_ICON = el("pane1PauseIcon")?.src || el("pane0PauseIcon")?.src || "";
 PLAY_ICON = el("startBtn")?.querySelector("img")?.src || "";
 
-// Prompt copy is authored in Webflow. Capture it before the first run blanks
-// the nodes, so resetRunState() can put the exact markup back. innerHTML rather
-// than textContent so a Shift+Enter <br> survives the round trip.
+// Prompt copy is authored here rather than in Webflow so the desktop and touch
+// variants can differ. restoreIdlePrompts() reapplies it after every run.
+const PANE0_PROMPT_DESKTOP =
+  "This is the unoptimized base model.<br>Compare it to the model on the left.";
+const PANE0_PROMPT_TOUCH =
+  "This is the unoptimized base model.<br>Compare it to the model above.";
+
+const PANE1_PROMPT_DESKTOP =
+  "This is TBC's optimized model.<br>Click to play and use your mouse to move around.";
+const PANE1_PROMPT_TOUCH =
+  "This is TBC's optimized model.<br>Tap to play and drag to move around.";
+
+const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
+
 const IDLE_PROMPTS = [
-  el("pane0Prompt")?.innerHTML || "",
-  el("pane1Prompt")?.innerHTML || "",
+  IS_TOUCH ? PANE0_PROMPT_TOUCH : PANE0_PROMPT_DESKTOP,
+  IS_TOUCH ? PANE1_PROMPT_TOUCH : PANE1_PROMPT_DESKTOP,
 ];
 
 function restoreIdlePrompts() {
@@ -4545,3 +4593,4 @@ void initCost();
 void initQuality();
 window.setInterval(renderTimers, 100);
 window.setInterval(() => void checkHealth(), 15000);
+restoreIdlePrompts();

@@ -172,6 +172,24 @@ function initQueueGating() {
     tutorial?.close("preparation-ended");
     if (typeof goToScreen === "function") goToScreen("select");
   });
+
+  document.addEventListener("tbc:replay-started", () => {
+    if (!window.matchMedia("(pointer: coarse)").matches) return;
+    const target = document.getElementById("pane0Card");
+    if (!target) return;
+    window.requestAnimationFrame(() => {
+      if (window.lenis) {
+        window.lenis.resize();
+        window.lenis.scrollTo(target, {
+          offset: -80,
+          force: true,
+          duration: 0.8,
+        });
+      } else {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  });
 }
 
 // BACK BUTTON ----------------------------------------------------------------
@@ -361,6 +379,70 @@ function initQueueDismiss() {
   });
 
   sync();
+}
+
+function initMobileControlsVisibility() {
+  const bar = document.querySelector(".controls_mobile_wrap");
+  if (!bar || typeof ScrollTrigger === "undefined") return;
+  if (!window.matchMedia("(pointer: coarse)").matches) return;
+
+  let trigger = null;
+  let hidden = false;
+
+  function disarm() {
+    trigger?.kill();
+    trigger = null;
+  }
+
+  function hide() {
+    disarm();
+    if (hidden) return;
+    hidden = true;
+    gsap.to(bar, {
+      autoAlpha: 0,
+      y: "1rem",
+      duration: 0.6,
+      ease: "power4.out",
+      onComplete: () => {
+        bar.classList.add("is-dismissed");
+        gsap.set(bar, { clearProps: "all" });
+      },
+    });
+  }
+
+  function show() {
+    if (!hidden) return;
+    hidden = false;
+    bar.classList.remove("is-dismissed");
+    gsap.fromTo(
+      bar,
+      { autoAlpha: 0, y: "1rem" },
+      {
+        autoAlpha: 1,
+        y: "0rem",
+        duration: 0.6,
+        ease: "power4.out",
+        onComplete: () => gsap.set(bar, { clearProps: "all" }),
+      }
+    );
+  }
+
+  // Scrolling away from the demo means the visitor is reading, not driving.
+  function armScrollDismiss() {
+    disarm();
+    const origin = window.scrollY;
+    trigger = ScrollTrigger.create({
+      start: 0,
+      end: "max",
+      onUpdate: (self) => {
+        if (Math.abs(self.scroll() - origin) >= 80) hide();
+      },
+    });
+  }
+
+  document.addEventListener("tbc:run-ended", hide);
+  document.addEventListener("tbc:replay-started", hide);
+  document.addEventListener("tbc:lead-started", show);
 }
 
 // TUTORIAL -------------------------------------------------------------------
@@ -574,6 +656,142 @@ function initTutorial() {
   window.tbcTutorial = tutorial;
 }
 
+/* Mobile touch controls */
+
+const MOBILE_LOOK_SENSITIVITY = 1.0;
+
+function isCoarsePointer() {
+  return window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+}
+
+function setupMobileButtons() {
+  const buttons = document.querySelectorAll(".controls_mobile_wrap [data-key]");
+  if (!buttons.length) return;
+
+  for (const button of buttons) {
+    const key = button.dataset.key;
+    let activePointerId = null;
+
+    const press = (event) => {
+      if (!state.running) return;
+      event.preventDefault();
+      activePointerId = event.pointerId;
+      try {
+        button.setPointerCapture(event.pointerId);
+      } catch {
+        // Capture is an optimization; the release handlers still fire without it.
+      }
+      state.keys.set(key, 1);
+      button.classList.add("is-pressed");
+    };
+
+    const release = (event) => {
+      if (activePointerId !== null && event.pointerId !== activePointerId)
+        return;
+      activePointerId = null;
+      state.keys.set(key, 0);
+      button.classList.remove("is-pressed");
+    };
+
+    button.addEventListener("pointerdown", press, { passive: false });
+    button.addEventListener("pointerup", release);
+    button.addEventListener("pointercancel", release);
+    button.addEventListener("lostpointercapture", release);
+  }
+}
+
+function setupMobileLook() {
+  const canvases = [
+    document.getElementById("pane0"),
+    document.getElementById("pane1"),
+  ].filter(Boolean);
+
+  for (const canvas of canvases) {
+    let activePointerId = null;
+    let lastX = 0;
+    let lastY = 0;
+
+    canvas.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.pointerType === "mouse") return;
+        if (!state.running) return;
+
+        // In sequential only the lead pane is drivable. Without this, a drag
+        // on the follow pane writes into state.camera[0] and pollutes the
+        // recorded track that the base model replays.
+        if (isSequential() && canvas.id !== "pane1") return;
+
+        // preventDefault below suppresses iOS's synthesized click, so the
+        // armed -> lead transition has to be driven from here.
+        if (state.sequentialPhase === "armed" && canvas.id === "pane1") {
+          beginLeadPhase();
+        }
+
+        event.preventDefault();
+        activePointerId = event.pointerId;
+        activePointerId = event.pointerId;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch {
+          // Capture is optional; pointermove still reports while the finger is down.
+        }
+      },
+      { passive: false }
+    );
+
+    canvas.addEventListener(
+      "pointermove",
+      (event) => {
+        if (activePointerId === null || event.pointerId !== activePointerId)
+          return;
+        event.preventDefault();
+        const dx = (event.clientX - lastX) * MOBILE_LOOK_SENSITIVITY;
+        const dy = (event.clientY - lastY) * MOBILE_LOOK_SENSITIVITY;
+        lastX = event.clientX;
+        lastY = event.clientY;
+        // Sequential replays the recorded lead track onto the follow pane, so
+        // live input must only reach the lead camera.
+        if (isSequential()) {
+          state.camera[1].dx += dx;
+          state.camera[1].dy += dy;
+        } else {
+          for (const camera of state.camera) {
+            camera.dx += dx;
+            camera.dy += dy;
+          }
+        }
+      },
+      { passive: false }
+    );
+
+    const end = (event) => {
+      if (activePointerId !== null && event.pointerId !== activePointerId)
+        return;
+      activePointerId = null;
+    };
+
+    canvas.addEventListener("pointerup", end);
+    canvas.addEventListener("pointercancel", end);
+    canvas.addEventListener("lostpointercapture", end);
+  }
+}
+
+function setupMobileInputSafety() {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") resetInput();
+  });
+}
+
+function setupMobileControls() {
+  if (!isCoarsePointer()) return;
+  setupMobileButtons();
+  setupMobileLook();
+  setupMobileInputSafety();
+}
+
 // INIT -----------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -584,4 +802,6 @@ document.addEventListener("DOMContentLoaded", function () {
   initStatusPillWatch();
   initFullMetrics();
   initQueueDismiss();
+  initMobileControlsVisibility();
+  setupMobileControls();
 });
