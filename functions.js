@@ -1,7 +1,7 @@
 // App glue for the TBC Neural Optimizer demo.
 // Depends on pair.js (engine) for: state, queueState, stop, handleStopRequest,
 // requestGeneration, tbcPublicText, drawRuntimeTrace.
-// Depends on demo.js / core.js for: goToScreen, shell, durationBase, easeOut.
+// Depends on demo.js for: goToScreen.
 
 const byId = (id) => document.getElementById(id);
 const hasEngine = () =>
@@ -729,7 +729,6 @@ function setupMobileLook() {
         }
 
         event.preventDefault();
-        activePointerId = event.pointerId;
         activePointerId = event.pointerId;
         lastX = event.clientX;
         lastY = event.clientY;

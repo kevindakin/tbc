@@ -26,7 +26,7 @@ function lenisScroll() {
 function loader() {
   const logo = document.querySelector('[data-load="logo"]');
   const heading = document.querySelector('[data-load="heading"]');
-  const button = document.querySelector('[data-load="blur-up"]');
+  const button = document.querySelectorAll('[data-load="blur-up"]');
   const nav = document.querySelector('[data-load="nav"]');
   const bg = document.querySelector('[data-load="fade-in"]');
 
@@ -51,111 +51,110 @@ function loader() {
     return;
   }
 
-  document.fonts.ready.then(() => {
-    let split = null;
-    let words = null;
+  let split = null;
+  let words = null;
 
-    if (heading && typeof SplitText !== "undefined") {
-      heading.setAttribute("aria-label", heading.textContent);
-      split = new SplitText(heading, { type: "words" });
-      split.words.forEach((w) => w.setAttribute("aria-hidden", "true"));
-      words = split.words;
-      gsap.set(heading, { autoAlpha: 1 });
-    }
+  if (heading && typeof SplitText !== "undefined") {
+    heading.setAttribute("aria-label", heading.textContent);
+    split = new SplitText(heading, { type: "words" });
+    split.words.forEach((w) => w.setAttribute("aria-hidden", "true"));
+    words = split.words;
+    gsap.set(heading, { autoAlpha: 1 });
+  }
 
-    const tl = gsap.timeline({
-      defaults: {
-        ease: easeOut,
-        duration: 1.4,
-      },
-      onComplete: () => {
-        if (isHome && heading) gsap.set(heading, { autoAlpha: 0 });
-      },
-    });
-
-    // 1. Background fade in
-    if (bg) {
-      tl.fromTo(bg, { autoAlpha: 0 }, { autoAlpha: 1, duration: 3 }, 0.2);
-    }
-
-    // 2. Logo — blur + scale in
-    if (logo) {
-      tl.fromTo(
-        logo,
-        { autoAlpha: 0, scale: 1.1, filter: "blur(12px)" },
-        { autoAlpha: 1, scale: 1, filter: "blur(0px)" },
-        0
-      );
-    }
-
-    // 3. Heading — words rise + blur in, staggered
-    if (words) {
-      tl.fromTo(
-        words,
-        { y: "4rem", autoAlpha: 0, filter: "blur(3px)" },
-        {
-          y: "0rem",
-          autoAlpha: 1,
-          filter: "blur(0px)",
-          stagger: 0.04,
-        },
-        0.3
-      );
-    }
-
-    // 4. Button — up + blur in
-    if (button) {
-      tl.fromTo(
-        button,
-        { autoAlpha: 0, y: "4rem", filter: "blur(3px)" },
-        {
-          autoAlpha: 1,
-          y: "0rem",
-          filter: "blur(0px)",
-        },
-        0.7
-      );
-    }
-
-    // 5. Top bar — subtle drop + fade
-    if (nav) {
-      tl.fromTo(
-        nav,
-        { autoAlpha: 0, y: "-4rem" },
-        { autoAlpha: 1, y: "0rem" },
-        0.5
-      );
-    }
-
-    // 6. Home only — heading exits, card takes its place
-    if (isHome) {
-      if (words) {
-        tl.to(
-          words,
-          {
-            y: "-4rem",
-            autoAlpha: 0,
-            filter: "blur(3px)",
-            stagger: 0.03,
-            duration: 0.7,
-            ease: "power2.in",
-          },
-          HOME_HEADING_OUT
-        );
-      }
-
-      tl.to(
-        card,
-        {
-          autoAlpha: 1,
-          filter: "blur(0px)",
-          y: "0rem",
-          onStart: () => window.dispatchEvent(new Event("hero-card-in")),
-        },
-        HOME_CARD_IN
-      );
-    }
+  const tl = gsap.timeline({
+    defaults: {
+      ease: easeOut,
+      duration: 1.4,
+    },
+    onComplete: () => {
+      if (isHome && heading) gsap.set(heading, { autoAlpha: 0 });
+    },
   });
+
+  // 1. Background fade in
+  if (bg) {
+    tl.fromTo(bg, { autoAlpha: 0 }, { autoAlpha: 1, duration: 3 }, 0.2);
+  }
+
+  // 2. Logo — blur + scale in
+  if (logo) {
+    tl.fromTo(
+      logo,
+      { autoAlpha: 0, scale: 1.1, filter: "blur(12px)" },
+      { autoAlpha: 1, scale: 1, filter: "blur(0px)" },
+      0
+    );
+  }
+
+  // 3. Heading — words rise + blur in, staggered
+  if (words) {
+    tl.fromTo(
+      words,
+      { y: "4rem", autoAlpha: 0, filter: "blur(3px)" },
+      {
+        y: "0rem",
+        autoAlpha: 1,
+        filter: "blur(0px)",
+        stagger: 0.04,
+      },
+      0.3
+    );
+  }
+
+  // 4. Button — up + blur in
+  if (button.length) {
+    tl.fromTo(
+      button,
+      { autoAlpha: 0, y: "4rem", filter: "blur(3px)" },
+      {
+        autoAlpha: 1,
+        y: "0rem",
+        filter: "blur(0px)",
+        stagger: 0.1,
+      },
+      0.7
+    );
+  }
+
+  // 5. Top bar — subtle drop + fade
+  if (nav) {
+    tl.fromTo(
+      nav,
+      { autoAlpha: 0, y: "-4rem" },
+      { autoAlpha: 1, y: "0rem" },
+      0.5
+    );
+  }
+
+  // 6. Home only — heading exits, card takes its place
+  if (isHome) {
+    if (words) {
+      tl.to(
+        words,
+        {
+          y: "-4rem",
+          autoAlpha: 0,
+          filter: "blur(3px)",
+          stagger: 0.03,
+          duration: 0.7,
+          ease: "power2.in",
+        },
+        HOME_HEADING_OUT
+      );
+    }
+
+    tl.to(
+      card,
+      {
+        autoAlpha: 1,
+        filter: "blur(0px)",
+        y: "0rem",
+        onStart: () => window.dispatchEvent(new Event("hero-card-in")),
+      },
+      HOME_CARD_IN
+    );
+  }
 }
 
 function navScroll() {
@@ -209,42 +208,38 @@ function headingSplit() {
     return;
   }
 
-  document.fonts.ready.then(() => {
-    headings.forEach((heading) => {
-      if (typeof SplitText === "undefined") {
-        gsap.set(heading, { autoAlpha: 1 });
-        return;
-      }
-
-      heading.setAttribute("aria-label", heading.textContent);
-      const split = new SplitText(heading, { type: "words" });
-      split.words.forEach((w) => w.setAttribute("aria-hidden", "true"));
-
+  headings.forEach((heading) => {
+    if (typeof SplitText === "undefined") {
       gsap.set(heading, { autoAlpha: 1 });
-      gsap.set(split.words, {
-        autoAlpha: 0,
-        y: "4rem",
-        filter: "blur(3px)",
-      });
+      return;
+    }
 
-      const tl = gsap.timeline({
-        scrollTrigger: {
-          trigger: heading,
-          start: "top 85%",
-          once: true,
-        },
-        defaults: { ease: easeOut, duration: 1.2 },
-      });
+    heading.setAttribute("aria-label", heading.textContent);
+    const split = new SplitText(heading, { type: "words" });
+    split.words.forEach((w) => w.setAttribute("aria-hidden", "true"));
 
-      tl.to(split.words, {
-        autoAlpha: 1,
-        y: "0rem",
-        filter: "blur(0px)",
-        stagger: 0.04,
-      });
+    gsap.set(heading, { autoAlpha: 1 });
+    gsap.set(split.words, {
+      autoAlpha: 0,
+      y: "4rem",
+      filter: "blur(3px)",
     });
 
-    ScrollTrigger.refresh();
+    const tl = gsap.timeline({
+      scrollTrigger: {
+        trigger: heading,
+        start: "top 85%",
+        toggleActions: "play none none none",
+      },
+      defaults: { ease: easeOut, duration: 1.2 },
+    });
+
+    tl.to(split.words, {
+      autoAlpha: 1,
+      y: "0rem",
+      filter: "blur(0px)",
+      stagger: 0.04,
+    });
   });
 }
 
@@ -257,16 +252,16 @@ function blurUp() {
     return;
   }
 
-  gsap.set(items, { y: "4rem" });
+  gsap.set(items, { y: "3rem" });
 
   items.forEach((item) => {
     const tl = gsap.timeline({
       scrollTrigger: {
         trigger: item,
         start: "top 80%",
-        once: true,
+        toggleActions: "play none none none",
       },
-      defaults: { ease: easeOut, duration: 1.2 },
+      defaults: { ease: easeOut, duration: 1.4 },
       onComplete: () =>
         gsap.set(item, { clearProps: "filter,transform,willChange" }),
     });
@@ -284,16 +279,16 @@ function blurRight() {
     return;
   }
 
-  gsap.set(items, { x: "-4rem" });
+  gsap.set(items, { x: "-3rem" });
 
   items.forEach((item) => {
     const tl = gsap.timeline({
       scrollTrigger: {
         trigger: item,
         start: "top 80%",
-        once: true,
+        toggleActions: "play none none none",
       },
-      defaults: { ease: easeOut, duration: 1.2 },
+      defaults: { ease: easeOut, duration: 1.4 },
       onComplete: () =>
         gsap.set(item, { clearProps: "filter,transform,willChange" }),
     });
@@ -311,21 +306,111 @@ function blurLeft() {
     return;
   }
 
-  gsap.set(items, { x: "4rem" });
+  gsap.set(items, { x: "3rem" });
 
   items.forEach((item) => {
     const tl = gsap.timeline({
       scrollTrigger: {
         trigger: item,
         start: "top 80%",
-        once: true,
+        toggleActions: "play none none none",
       },
-      defaults: { ease: easeOut, duration: 1.2 },
+      defaults: { ease: easeOut, duration: 1.4 },
       onComplete: () =>
         gsap.set(item, { clearProps: "filter,transform,willChange" }),
     });
 
     tl.to(item, { autoAlpha: 1, x: "0rem", filter: "blur(0px)" });
+  });
+}
+
+function lineDraw() {
+  const items = gsap.utils.toArray('[data-scroll="line-draw"]');
+  if (!items.length) return;
+
+  gsap.set(items, { scaleX: 0 });
+
+  items.forEach((item) => {
+    const tl = gsap.timeline({
+      scrollTrigger: {
+        trigger: item,
+        start: "top 80%",
+        toggleActions: "play none none none",
+      },
+      defaults: { ease: easeOut, duration: 1.2 },
+    });
+
+    tl.to(item, { scaleX: 1 });
+  });
+}
+
+function fadeIn() {
+  const items = gsap.utils.toArray('[data-scroll="fade"]');
+  if (!items.length) return;
+
+  items.forEach((item) => {
+    const tl = gsap.timeline({
+      scrollTrigger: {
+        trigger: item,
+        start: "top 80%",
+        toggleActions: "play none none none",
+      },
+      defaults: { ease: easeOut, duration: 1.2 },
+    });
+
+    tl.to(item, { autoAlpha: 1, filter: "blur(0px)" });
+  });
+}
+
+function imageParallax() {
+  const wraps = document.querySelectorAll('[data-parallax-image="wrap"]');
+  if (!wraps.length) return;
+
+  wraps.forEach((wrap) => {
+    const image = wrap.querySelector('[data-parallax-image="image"]');
+    if (!image) return;
+
+    gsap.fromTo(
+      image,
+      { yPercent: 7 },
+      {
+        yPercent: -7,
+        ease: "none",
+        scrollTrigger: {
+          trigger: wrap,
+          start: "top bottom",
+          end: "bottom top",
+          scrub: 1,
+          invalidateOnRefresh: true,
+        },
+      }
+    );
+  });
+}
+
+function parallaxFade() {
+  document.querySelectorAll('[data-parallax-fade="wrap"]').forEach((wrap) => {
+    const items = wrap.querySelectorAll('[data-parallax-fade="item"]');
+    if (!items.length) return;
+
+    gsap.fromTo(
+      items,
+      { opacity: 0, y: "6rem" },
+      {
+        opacity: 1,
+        y: "0rem",
+        duration: 1,
+        ease: "power1.out",
+        stagger: { amount: 0.2, from: "start", ease: "none" },
+        scrollTrigger: {
+          trigger: wrap,
+          start: "top 90%",
+          end: "top 50%",
+          scrub: 1,
+          invalidateOnRefresh: true,
+        },
+      }
+    );
   });
 }
 
@@ -335,7 +420,9 @@ function scrollIsoProcess() {
   if (prefersReducedMotion) return;
 
   const paintings = gsap.utils.toArray(":scope > [data-iso-wrap]", scope);
-  const arrows = gsap.utils.toArray(":scope > .process_iso_arrow", scope);
+  const arrows = gsap.utils
+    .toArray(":scope > .process_iso_arrow", scope)
+    .filter((arrow) => arrow.querySelectorAll("path").length >= 2);
   const stack = scope.querySelector(".process_iso_stack");
   const layers = stack ? gsap.utils.toArray("[data-iso-wrap]", stack) : [];
 
@@ -346,6 +433,8 @@ function scrollIsoProcess() {
     arrows[1],
     paintings[1],
   ].filter(Boolean);
+
+  if (!sequence.length) return;
 
   const stagger = 0.15;
 
@@ -369,7 +458,7 @@ function scrollIsoProcess() {
     scrollTrigger: {
       trigger: scope,
       start: "top 70%",
-      once: true,
+      toggleActions: "play none none none",
     },
     defaults: { ease: "power2.out", duration: 1.2 },
   });
@@ -426,7 +515,11 @@ function mobileMenu() {
   const menu = nav.querySelector(".nav_content");
   const overlay = nav.querySelector(".nav_overlay");
   const button = nav.querySelector('[data-menu="hamburger"]');
+  if (!menu || !overlay || !button) return;
+
   const buttonInner = button.querySelector(".nav_hamburger_inner");
+  if (!buttonInner || buttonInner.children.length < 2) return;
+
   const links = menu.querySelectorAll('[data-menu="item"]');
   const lineTop = buttonInner.children[0];
   const lineBottom = buttonInner.children[1];
@@ -569,23 +662,54 @@ function mobileMenu() {
   return () => mm.revert();
 }
 
+function runModule(fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[core] ${fn.name} failed:`, err);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", function () {
-  lenisScroll();
-  navScroll();
-  externalLinks();
-  loader();
-  headingSplit();
-  blurUp();
-  blurRight();
-  blurLeft();
-  scrollIsoProcess();
-  trackAnim();
+  if (typeof gsap === "undefined") return;
 
-  gsap.matchMedia().add("(width > 991px)", () => {
-    buttonHover();
+  gsap.registerPlugin(
+    ...[
+      typeof ScrollTrigger !== "undefined" && ScrollTrigger,
+      typeof SplitText !== "undefined" && SplitText,
+    ].filter(Boolean)
+  );
+
+  runModule(lenisScroll);
+  runModule(navScroll);
+  runModule(externalLinks);
+
+  document.fonts.ready.then(() => {
+    runModule(loader);
+    runModule(headingSplit);
+    runModule(blurUp);
+    runModule(blurRight);
+    runModule(blurLeft);
+    runModule(lineDraw);
+    runModule(fadeIn);
+    runModule(scrollIsoProcess);
+    runModule(imageParallax);
+    runModule(trackAnim);
+
+    gsap.matchMedia().add("(width > 991px)", () => {
+      runModule(buttonHover);
+      runModule(parallaxFade);
+    });
+
+    gsap.matchMedia().add("(max-width: 991px)", () => {
+      runModule(mobileMenu);
+    });
+
+    ScrollTrigger.refresh();
+
+    clearTimeout(window.__animFailsafe);
+    document.documentElement.classList.add("anim-ready");
   });
 
-  gsap.matchMedia().add("(max-width: 991px)", () => {
-    mobileMenu();
-  });
+  window.addEventListener("load", () => ScrollTrigger.refresh());
 });

@@ -1,3 +1,8 @@
+const DEMO_DURATION = 0.8;
+const DEMO_EASE_IN = "power4.in";
+const DEMO_EASE_OUT = "power4.out";
+const DEMO_REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 const shell = document.getElementById("experience");
 let isTransitioning = false;
 
@@ -37,7 +42,7 @@ function goToScreen(name) {
   const forward = SCREEN_ORDER.indexOf(name) > SCREEN_ORDER.indexOf(fromName);
 
   // Accessibility: swap instantly, skip the tweens.
-  if (prefersReducedMotion) {
+  if (DEMO_REDUCED_MOTION) {
     shell.dataset.screen = name;
     remeasure();
     // setGradientPlaying(name !== "run");
@@ -62,8 +67,8 @@ function goToScreen(name) {
       autoAlpha: 0,
       y: "-4rem",
       filter: "blur(3px)",
-      duration: durationBase,
-      ease: easeIn,
+      duration: DEMO_DURATION,
+      ease: DEMO_EASE_IN,
     });
   }
 
@@ -93,8 +98,8 @@ function goToScreen(name) {
         autoAlpha: 1,
         y: "0rem",
         filter: "blur(0px)",
-        duration: durationBase,
-        ease: easeOut,
+        duration: DEMO_DURATION,
+        ease: DEMO_EASE_OUT,
         stagger: forward ? 0.1 : 0,
       },
       "reveal"
@@ -110,7 +115,7 @@ document.addEventListener("click", (event) => {
   goToScreen(trigger.dataset.screenGo);
 });
 
-function loader() {
+function demoLoader() {
   const first = screenView(shell?.dataset.screen);
   if (!first) return;
 
@@ -123,7 +128,7 @@ function loader() {
   const bg = document.querySelector('[data-demo-load="fade-in"]');
   const targets = [logo, heading, button, nav, bg].filter(Boolean);
 
-  if (prefersReducedMotion) {
+  if (DEMO_REDUCED_MOTION) {
     gsap.set(targets, { autoAlpha: 1, clearProps: "filter,transform" });
     return;
   }
@@ -142,7 +147,7 @@ function loader() {
 
     const tl = gsap.timeline({
       defaults: {
-        ease: easeOut,
+        ease: DEMO_EASE_OUT,
         duration: 1.4,
       },
     });
@@ -274,7 +279,7 @@ function sceneTileIndicator() {
 
   var wrap = container.closest(".demo_select_tiles_wrap") || container;
   var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var DURATION = reduce ? 0 : durationBase;
+  var DURATION = reduce ? 0 : DEMO_DURATION;
   var EASE = "power4.out";
 
   // adopt the Webflow-authored span, or build one
@@ -389,7 +394,7 @@ function sceneTileIndicator() {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
-  loader();
+  demoLoader();
   iconHover();
   introButton();
   sceneTileIndicator();
