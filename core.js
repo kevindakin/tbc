@@ -411,14 +411,12 @@ function parallaxFade() {
     const items = wrap.querySelectorAll('[data-parallax-fade="item"]');
     if (!items.length) return;
 
-    gsap.set(items, { opacity: 0, y: "6rem" });
-
-    gsap.to(
+    gsap.fromTo(
       items,
+      { opacity: 0, y: "6rem" },
       {
         opacity: 1,
         y: "0rem",
-        duration: 1,
         ease: "power1.out",
         stagger: { amount: 0.2, from: "start", ease: "none" },
         scrollTrigger: {
