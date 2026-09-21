@@ -159,22 +159,39 @@ function loader() {
 
 function navScroll() {
   const nav = document.querySelector('[data-menu="nav"]');
-  if (!nav) return;
-
-  const THRESHOLD = 1;
-
-  if (nav.dataset.scriptInitialized) return;
+  if (!nav || nav.dataset.scriptInitialized) return;
   nav.dataset.scriptInitialized = "true";
 
+  const bar = document.querySelector('[data-announcement="bar"]');
+  const root = document.documentElement;
+  const THRESHOLD = 1;
+
+  let offset = null;
   let scrolled = null;
   let frame = null;
 
   const update = () => {
     frame = null;
-    const next = window.scrollY > THRESHOLD;
-    if (next === scrolled) return;
-    scrolled = next;
-    nav.classList.toggle("is-scrolled", next);
+
+    // Nav sits at the bar's visible bottom edge, clamped to 0
+    const nextOffset = bar
+      ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom))
+      : 0;
+
+    if (nextOffset !== offset) {
+      offset = nextOffset;
+      root.style.setProperty("--nav-top", `${offset}px`);
+    }
+
+    // Option A: current behavior
+    const nextScrolled = window.scrollY > THRESHOLD;
+    // Option B: switch only once the nav docks at the top
+    // const nextScrolled = offset === 0 && window.scrollY > THRESHOLD;
+
+    if (nextScrolled !== scrolled) {
+      scrolled = nextScrolled;
+      nav.classList.toggle("is-scrolled", scrolled);
+    }
   };
 
   const schedule = () => {
@@ -184,6 +201,7 @@ function navScroll() {
 
   update();
   window.addEventListener("scroll", schedule, { passive: true });
+  window.addEventListener("resize", schedule, { passive: true });
 }
 
 function externalLinks() {
