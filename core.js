@@ -167,8 +167,18 @@ function navScroll() {
   const THRESHOLD = 1;
 
   let offset = null;
+  let bottom = null;
   let scrolled = null;
   let frame = null;
+
+  // Publishes the nav's bottom edge (top offset + rendered height) for the sticky nav
+  const setBottom = () => {
+    const nextBottom = Math.round((offset ?? 0) + nav.offsetHeight);
+    if (nextBottom !== bottom) {
+      bottom = nextBottom;
+      root.style.setProperty("--nav-bottom", `${bottom}px`);
+    }
+  };
 
   const update = () => {
     frame = null;
@@ -182,6 +192,8 @@ function navScroll() {
       offset = nextOffset;
       root.style.setProperty("--nav-top", `${offset}px`);
     }
+
+    setBottom();
 
     // Option A: current behavior
     const nextScrolled = window.scrollY > THRESHOLD;
@@ -198,6 +210,9 @@ function navScroll() {
     if (frame) return;
     frame = requestAnimationFrame(update);
   };
+
+  // Re-measure while the nav shrinks/grows (is-scrolled transition, breakpoints, font load)
+  new ResizeObserver(setBottom).observe(nav);
 
   update();
   window.addEventListener("scroll", schedule, { passive: true });
