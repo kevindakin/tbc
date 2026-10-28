@@ -232,6 +232,68 @@ function externalLinks() {
   });
 }
 
+function lazyVideo() {
+  const videos = document.querySelectorAll('[data-video="lazy"]');
+  if (!videos.length) return;
+
+  const load = (video) => {
+    if (video.dataset.loaded || !video.dataset.src) return;
+    video.dataset.loaded = "true";
+    video.preload = "auto";
+    video.src = video.dataset.src;
+  };
+
+  const play = (video) => {
+    if (prefersReducedMotion || document.hidden) return;
+    video.play().catch(() => {});
+  };
+
+  const loadObserver = new IntersectionObserver(
+    (entries, obs) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        load(entry.target);
+        obs.unobserve(entry.target);
+      });
+    },
+    { rootMargin: "500px 0px" }
+  );
+
+  // Play only while actually on screen
+  const playObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const video = entry.target;
+        video.dataset.inView = entry.isIntersecting;
+        if (entry.isIntersecting) {
+          load(video);
+          play(video);
+        } else {
+          video.pause();
+        }
+      });
+    },
+    { rootMargin: "-10% 0px -10% 0px" }
+  );
+
+  videos.forEach((video) => {
+    if (video.dataset.scriptInitialized) return;
+    video.dataset.scriptInitialized = "true";
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    loadObserver.observe(video);
+    playObserver.observe(video);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    videos.forEach((video) => {
+      if (document.hidden) video.pause();
+      else if (video.dataset.inView === "true") play(video);
+    });
+  });
+}
+
 function headingSplit() {
   const headings = gsap.utils.toArray('[data-scroll="heading"] h2');
   if (!headings.length) return;
@@ -715,6 +777,7 @@ document.addEventListener("DOMContentLoaded", function () {
   runModule(lenisScroll);
   runModule(navScroll);
   runModule(externalLinks);
+  runModule(lazyVideo);
 
   document.fonts.ready.then(() => {
     runModule(loader);
